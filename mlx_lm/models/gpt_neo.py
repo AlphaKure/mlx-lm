@@ -41,16 +41,16 @@ class GPTNeoAttention(nn.Module):
 
     def __call__(
         self,
-        x: mx.array,
+        inputs: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
 
-        B, L, D = x.shape
+        B, L, D = inputs.shape
 
-        queries = self.q_proj(x)
-        keys = self.k_proj(x)
-        values = self.v_proj(x)
+        queries = self.q_proj(inputs)
+        keys = self.k_proj(inputs)
+        values = self.v_proj(inputs)
 
         queries = queries.reshape(B, L, self.num_heads, -1).transpose(0, 2, 1, 3)
         keys = keys.reshape(B, L, self.num_heads, -1).transpose(0, 2, 1, 3)
@@ -75,8 +75,8 @@ class GPTNeoMLP(nn.Module):
         self.c_fc = nn.Linear(embed_dim, 4*embed_dim , bias= True)
         self.c_proj = nn.Linear(4*embed_dim, embed_dim, bias= True)
 
-    def __call__(self, x: mx.array) -> mx.array:
-        hidden_states = self.c_fc(x)
+    def __call__(self, inputs: mx.array) -> mx.array:
+        hidden_states = self.c_fc(inputs)
         hidden_states = nn.gelu_approx(hidden_states) # gelu_new
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
@@ -96,13 +96,13 @@ class GPTNeoBlock(nn.Module):
 
     def __call__(
         self,
-        x: mx.array,
+        inputs: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
 
-        residual = x 
-        hidden_states = self.ln_1(x)
+        residual = inputs 
+        hidden_states = self.ln_1(inputs)
         attn_output = self.attn(x= hidden_states, mask= mask, cache= cache)
 
         hidden_states = attn_output + residual
@@ -161,7 +161,7 @@ class GPTNeoModel(nn.Module):
                     hidden_status, c
                 )
             hidden_status = block(
-                x= hidden_status,
+                inputs= hidden_status,
                 mask= mask,
                 cache= c
             )
