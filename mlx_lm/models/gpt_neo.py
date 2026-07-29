@@ -1,10 +1,11 @@
 from dataclasses import dataclass, field
-from typing import Optional, Any
+from typing import Any, Optional
 
-from .base import BaseModelArgs, scaled_dot_product_attention, create_attention_mask
-
-from mlx import nn
 import mlx.core as mx
+from mlx import nn
+
+from .base import BaseModelArgs, create_attention_mask, scaled_dot_product_attention
+
 
 @dataclass
 class ModelArgs(BaseModelArgs):
@@ -15,7 +16,7 @@ class ModelArgs(BaseModelArgs):
     layer_norm_epsilon: float = 1e-05
     num_heads: int = 16
     num_layers: int = 24
-    attention_layers: list = field(default_factory= list)
+    attention_layers: list = field(default_factory=list)
     window_size: int = 256
 
 
@@ -25,7 +26,7 @@ class GPTNeoAttention(nn.Module):
         super().__init__()
         self.embed_dim = args.hidden_size
         self.num_heads = args.num_heads
-        self.head_dim = self.embed_dim // self.num_heads 
+        self.head_dim = self.embed_dim // self.num_heads
         if self.head_dim * self.num_heads != self.embed_dim:
             raise ValueError(
                 f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim} and `num_heads`:"
@@ -34,10 +35,10 @@ class GPTNeoAttention(nn.Module):
 
         self.scaling = 1.0  # GPT-Neo does NOT scale attention scores
 
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias= False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias= False)
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias= False)
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias= True)
+        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
 
     def __call__(
         self,
@@ -66,20 +67,22 @@ class GPTNeoAttention(nn.Module):
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
         return self.out_proj(output)
 
+
 class GPTNeoMLP(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
         embed_dim = args.hidden_size
 
-        self.c_fc = nn.Linear(embed_dim, 4*embed_dim , bias= True)
-        self.c_proj = nn.Linear(4*embed_dim, embed_dim, bias= True)
+        self.c_fc = nn.Linear(embed_dim, 4 * embed_dim, bias=True)
+        self.c_proj = nn.Linear(4 * embed_dim, embed_dim, bias=True)
 
     def __call__(self, inputs: mx.array) -> mx.array:
         hidden_states = self.c_fc(inputs)
-        hidden_states = nn.gelu_approx(hidden_states) # gelu_new
+        hidden_states = nn.gelu_approx(hidden_states)  # gelu_new
         hidden_states = self.c_proj(hidden_states)
         return hidden_states
+
 
 class GPTNeoBlock(nn.Module):
 
@@ -89,10 +92,10 @@ class GPTNeoBlock(nn.Module):
         # global local attention
         self.isLocal = args.attention_layers[layer_id] == "local"
 
-        self.ln_1 = nn.LayerNorm(args.hidden_size, eps= args.layer_norm_epsilon)
-        self.attn = GPTNeoAttention(args= args)
-        self.ln_2 = nn.LayerNorm(args.hidden_size, eps= args.layer_norm_epsilon)
-        self.mlp = GPTNeoMLP(args= args)
+        self.ln_1 = nn.LayerNorm(args.hidden_size, eps=args.layer_norm_epsilon)
+        self.attn = GPTNeoAttention(args=args)
+        self.ln_2 = nn.LayerNorm(args.hidden_size, eps=args.layer_norm_epsilon)
+        self.mlp = GPTNeoMLP(args=args)
 
     def __call__(
         self,
@@ -101,9 +104,9 @@ class GPTNeoBlock(nn.Module):
         cache: Optional[Any] = None,
     ) -> mx.array:
 
-        residual = inputs 
+        residual = inputs
         hidden_states = self.ln_1(inputs)
-        attn_output = self.attn(x= hidden_states, mask= mask, cache= cache)
+        attn_output = self.attn(inputs=hidden_states, mask=mask, cache=cache)
 
         hidden_states = attn_output + residual
 
@@ -115,6 +118,7 @@ class GPTNeoBlock(nn.Module):
 
         return hidden_states
 
+
 class GPTNeoModel(nn.Module):
 
     def __init__(self, args: ModelArgs):
@@ -124,17 +128,20 @@ class GPTNeoModel(nn.Module):
         self.embed_dim = args.hidden_size
         self.wte = nn.Embedding(args.vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(args.max_position_embeddings, self.embed_dim)
-        self.h = [GPTNeoBlock(args= args, layer_id = layer_id) for layer_id in range(args.num_layers)]
-        self.ln_f = nn.LayerNorm(self.embed_dim, eps= args.layer_norm_epsilon)
+        self.h = [
+            GPTNeoBlock(args=args, layer_id=layer_id)
+            for layer_id in range(args.num_layers)
+        ]
+        self.ln_f = nn.LayerNorm(self.embed_dim, eps=args.layer_norm_epsilon)
 
     def __call__(
         self,
         inputs: mx.array,
-        cache: Optional[Any]= None,
+        cache: Optional[Any] = None,
     ) -> mx.array:
 
         batch_size, input_length = inputs.shape
-        
+
         if cache is None:
             cache = [None] * len(self.h)
 
@@ -153,20 +160,15 @@ class GPTNeoModel(nn.Module):
             if block.isLocal:
                 # local attention
                 mask = create_attention_mask(
-                    hidden_status, c, window_size= self.args.window_size
+                    hidden_status, c, window_size=self.args.window_size
                 )
             else:
                 # global attention
-                mask = create_attention_mask(
-                    hidden_status, c
-                )
-            hidden_status = block(
-                inputs= hidden_status,
-                mask= mask,
-                cache= c
-            )
+                mask = create_attention_mask(hidden_status, c)
+            hidden_status = block(inputs=hidden_status, mask=mask, cache=c)
 
         return self.ln_f(hidden_status)
+
 
 class Model(nn.Module):
     def __init__(self, args: ModelArgs):
@@ -177,10 +179,7 @@ class Model(nn.Module):
 
     def __call__(self, inputs, cache=None):
 
-        output = self.model(
-            inputs=inputs,
-            cache=cache
-        )
+        output = self.model(inputs=inputs, cache=cache)
 
         logits = self.model.wte.as_linear(output)
         return logits
@@ -194,7 +193,9 @@ class Model(nn.Module):
                 del weights[f"transformer.h.{i}.attn.attention.masked_bias"]
         for weight in weights:
             if not weight.startswith("model."):
-                new_weights[f"model.{weight.replace('transformer.', '').replace('.attn.attention.', '.attn.')}"] = weights[weight]
+                new_weights[
+                    f"model.{weight.replace('transformer.', '').replace('.attn.attention.', '.attn.')}"
+                ] = weights[weight]
             else:
                 new_weights[weight] = weights[weight]
         return new_weights
