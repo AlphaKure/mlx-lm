@@ -5,6 +5,7 @@ import mlx.core as mx
 from mlx import nn
 
 from .base import BaseModelArgs, create_attention_mask, scaled_dot_product_attention
+from .cache import KVCache, RotatingKVCache
 from .rope_utils import initialize_rope
 
 
@@ -53,26 +54,23 @@ class LizzyAttention(nn.Module):
         self.rope_override = config.rope_type_overrides.get(self.layer_type, None)
         if self.use_rope:
 
-            rope_type = self.rope_override or config.rope_scaling.get(
-                "rope_type", "default"
+            rope_scaling = config.rope_scaling
+            rope_type = self.rope_override
+
+            if rope_type is None and self.layer_type == "sliding_attention":
+                # sliding use default (when override is None)
+                rope_type = "default"
+
+            if rope_type is not None:
+                rope_scaling["rope_type"] = rope_type
+
+            self.rope = initialize_rope(
+                dims=config.head_dim,
+                base=config.rope_theta,
+                traditional=False,
+                scaling_config=rope_scaling,
+                max_position_embeddings=config.max_position_embeddings,
             )
-            if rope_type == "dynamic":
-                # dynamic
-                self.rope = initialize_rope(
-                    dims=self.head_dim,
-                    base=config.rope_theta,
-                    traditional=False,
-                    scaling_config=config.rope_scaling,
-                    max_position_embeddings=config.max_position_embeddings,
-                )
-            else:
-                # non-dynamic RoPE (default, YaRN, etc)
-                self.rope = initialize_rope(
-                    dims=self.head_dim,
-                    base=config.rope_theta,
-                    traditional=False,
-                    scaling_config=config.rope_scaling,
-                )
 
         # linears
         self.q_proj = nn.Linear(
@@ -242,6 +240,9 @@ class LizzyModel(nn.Module):
         ]
         self.norm = nn.RMSNorm(dims=config.hidden_size, eps=config.norm_eps)
 
+        self.fa_idx = config.layer_types.index("full_attention")
+        self.swa_idx = config.layer_types.index("sliding_attention")
+
     def __call__(
         self,
         inputs: mx.array,
@@ -253,9 +254,11 @@ class LizzyModel(nn.Module):
         if cache is None:
             cache = [None] * len(self.layers)
 
-        full_mask = create_attention_mask(h=hidden_status, cache=cache[0])
+        full_mask = create_attention_mask(h=hidden_status, cache=cache[self.fa_idx])
         sliding_mask = create_attention_mask(
-            h=hidden_status, cache=cache[0], window_size=self.config.sliding_window
+            h=hidden_status,
+            cache=cache[self.swa_idx],
+            window_size=self.config.sliding_window,
         )
 
         index = 0
@@ -293,3 +296,14 @@ class Model(nn.Module):
     @property
     def layers(self):
         return self.model.layers
+
+    def make_cache(self):
+        caches = []
+        for lt in self.model.config.layer_types:
+            if lt == "full_attention":
+                caches.append(KVCache())
+            else:
+                caches.append(
+                    RotatingKVCache(max_size=self.model.config.sliding_window)
+                )
+        return caches
