@@ -10,11 +10,11 @@ from .base import BaseModelArgs, create_attention_mask, scaled_dot_product_atten
 @dataclass
 class ModelArgs(BaseModelArgs):
     model_type: str = "bloom"
-    n_embed: int = 14336
-    num_attention_heads: int = 112
+    hidden_size: int = 4096
+    n_head: int = 32
     vocab_size: int = 250880
     layer_norm_epsilon: float = 1e-05
-    n_layer: int = 70
+    n_layer: int = 30
 
 
 class BloomAttention(nn.Module):
@@ -22,8 +22,8 @@ class BloomAttention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
 
-        self.hidden_size = args.n_embed
-        self.num_heads = args.num_attention_heads
+        self.hidden_size = args.hidden_size
+        self.num_heads = args.n_head
 
         self.head_dim = self.hidden_size // self.num_heads
 
@@ -90,7 +90,7 @@ class BloomMLP(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
 
-        hidden_size = args.n_embed
+        hidden_size = args.hidden_size
 
         self.dense_h_to_4h = nn.Linear(hidden_size, 4 * hidden_size, bias=True)
         self.dense_4h_to_h = nn.Linear(4 * hidden_size, hidden_size, bias=True)
@@ -107,7 +107,7 @@ class BloomBlock(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
 
-        self.hidden_size = args.n_embed
+        self.hidden_size = args.hidden_size
 
         self.input_layernorm = nn.LayerNorm(
             self.hidden_size, eps=args.layer_norm_epsilon, bias=True
@@ -148,8 +148,8 @@ class BloomModel(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
 
-        self.embed_dim = args.n_embed
-        self.num_heads = args.num_attention_heads
+        self.embed_dim = args.hidden_size
+        self.num_heads = args.n_head
 
         self.word_embeddings = nn.Embedding(args.vocab_size, self.embed_dim)
         self.word_embeddings_layernorm = nn.LayerNorm(
@@ -200,7 +200,11 @@ class Model(nn.Module):
         new_weights = {}
         for weight in weights:
             if not weight.startswith("model."):
-                new_weights[f"model.{weight}"] = weights[weight]
+                if "transformer." in weight:
+                    weight_name = weight.replace("transformer.", "")
+                else:
+                    weight_name = weight
+                new_weights[f"model.{weight_name}"] = weights[weight]
             else:
                 new_weights[weight] = weights[weight]
         return new_weights
