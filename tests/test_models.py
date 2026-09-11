@@ -490,6 +490,21 @@ class TestModels(unittest.TestCase):
             model, args.model_type, args.vocab_size, args.num_hidden_layers
         )
 
+    def test_bloom(self):
+
+        from mlx_lm.models import bloom
+
+        args = bloom.ModelArgs(
+            model_type="bloom",
+            hidden_size=4096,
+            n_head=32,
+            vocab_size=250880,
+            layer_norm_epsilon=1e-05,
+            n_layer=30,
+        )
+        model = bloom.Model(args)
+        self.model_test_runner(model, args.model_type, args.vocab_size, args.n_layer)
+
     def test_phi2(self):
         from mlx_lm.models import phi
 
