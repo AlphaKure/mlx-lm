@@ -15,6 +15,18 @@ class ModelArgs(BaseModelArgs):
     vocab_size: int = 250880
     layer_norm_epsilon: float = 1e-05
     n_layer: int = 30
+    num_attention_heads: Optional[int] = None
+    n_embed: Optional[int] = None
+
+    def __post_init__(self):
+
+        if self.num_attention_heads is not None:
+
+            self.n_head = self.num_attention_heads
+
+        if self.n_embed is not None:
+
+            self.hidden_size = self.n_embed
 
 
 class BloomAttention(nn.Module):
