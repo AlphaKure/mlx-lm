@@ -2333,6 +2333,40 @@ class TestModels(unittest.TestCase):
             model, args.model_type, args.vocab_size, args.num_hidden_layers
         )
 
+    def test_olmo_hybrid(self):
+        from mlx_lm.models import olmo_hybrid
+
+        args = olmo_hybrid.ModelArgs(
+            model_type="olmo_hybrid",
+            hidden_size=128,
+            intermediate_size=256,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-4,
+            vocab_size=1000,
+            max_position_embeddings=128,
+            linear_num_key_heads=1,
+            linear_num_value_heads=2,
+            linear_key_head_dim=32,
+            linear_value_head_dim=32,
+            linear_conv_kernel_dim=3,
+            linear_allow_neg_eigval=False,
+            tie_word_embeddings=False,
+            attention_bias=False,
+            rope_theta=1000,
+            layer_types=[
+                "linear_attention",
+                "linear_attention",
+                "linear_attention",
+                "full_attention",
+            ],
+        )
+        model = olmo_hybrid.Model(args)
+        self.model_test_runner(
+            model, args.model_type, args.vocab_size, args.num_hidden_layers
+        )
+
     def test_exaone(self):
         from mlx_lm.models import exaone
 
@@ -2519,6 +2553,60 @@ class TestModels(unittest.TestCase):
         )
         sanitized = model.sanitize(weights)
         self.assertNotIn("lm_head.weight", sanitized)
+
+    def test_laguna_sanitize(self):
+        from mlx_lm.models import laguna
+
+        args = laguna.ModelArgs(
+            model_type="laguna",
+            vocab_size=100,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            sliding_window=4,
+            num_experts=4,
+            num_experts_per_tok=2,
+            moe_intermediate_size=16,
+            shared_expert_intermediate_size=16,
+            layer_types=["full_attention", "sliding_attention"],
+            mlp_layer_types=["dense", "sparse"],
+        )
+        model = laguna.Model(args)
+        reference = dict(tree_flatten(model.parameters()))
+
+        def check(weights):
+            m = laguna.Model(args)
+            m.load_weights(list(m.sanitize(weights).items()), strict=True)
+            out = m(mx.array([[0, 1, 2]]))
+            self.assertEqual(out.shape, (1, 3, args.vocab_size))
+
+        # Native layout loads unchanged.
+        check(dict(reference))
+
+        # Public repacks (e.g. mlx-community/Laguna-XS-2.1-bf16) wrap every
+        # tensor in a VLM-style `language_model.` prefix.
+        check({f"language_model.{k}": v for k, v in reference.items()})
+
+        # The original poolside layout (e.g. poolside/Laguna-S-2.1-bf16):
+        # bare router matrix, correction bias under `experts.`, and
+        # individually stored experts.
+        original = {}
+        for k, v in reference.items():
+            if k.endswith(".mlp.gate.proj.weight"):
+                original[k.replace(".gate.proj.weight", ".gate.weight")] = v
+            elif k.endswith(".mlp.gate.e_score_correction_bias"):
+                original[k.replace(".gate.", ".experts.")] = v
+            elif ".mlp.switch_mlp." in k:
+                base, proj_suffix = k.split(".switch_mlp.")
+                proj, suffix = proj_suffix.rsplit(".", 1)
+                for e in range(args.num_experts):
+                    original[f"{base}.experts.{e}.{proj}.{suffix}"] = v[e]
+            else:
+                original[k] = v
+        check(original)
 
     def test_all_models(self):
         test_configs = [
@@ -4052,6 +4140,77 @@ class TestModels(unittest.TestCase):
                 y = y[:, s:e]
                 self.assertTrue(mx.allclose(y, y_gt, rtol=1e-4, atol=1e-4))
                 self.assertTrue(mx.allclose(st, st_gt, rtol=1e-4, atol=1e-3))
+
+    def _spark2_5_args(self, **overrides):
+        from mlx_lm.models import spark2_5
+
+        config = dict(
+            model_type="spark2_5",
+            hidden_size=128,
+            intermediate_size=256,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            head_dim=64,
+            vocab_size=1000,
+            sliding_window=32,
+            rope_parameters={
+                "sliding_attention": {
+                    "rope_theta": 10000.0,
+                    "partial_rotary_factor": 1.0,
+                },
+                "full_attention": {
+                    "rope_theta": 5e6,
+                    "partial_rotary_factor": 0.25,
+                },
+            },
+        )
+        config.update(overrides)
+        return spark2_5.ModelArgs(**config)
+
+    def test_spark2_5(self):
+        from mlx_lm.models import spark2_5
+        from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+        args = self._spark2_5_args()
+        model = spark2_5.Model(args)
+        self.model_test_runner(
+            model, args.model_type, args.vocab_size, args.num_hidden_layers
+        )
+
+        # Sliding layers need a bounded cache, full layers an unbounded one.
+        caches = model.make_cache()
+        for layer, cache in zip(model.layers, caches):
+            expected = RotatingKVCache if layer.is_sliding else KVCache
+            self.assertIsInstance(cache, expected)
+
+    def test_spark2_5_chunked_vs_oneshot_prefill(self):
+        from mlx_lm.models import spark2_5
+
+        # sliding_window=16 with 40 tokens makes the rotating cache wrap.
+        args = self._spark2_5_args(sliding_window=16)
+        model = spark2_5.Model(args)
+        model.update(tree_map(lambda p: p.astype(mx.float32), model.parameters()))
+
+        ids = mx.array([list(range(40))])
+        oneshot_cache = make_prompt_cache(model)
+        oneshot = model(ids, cache=oneshot_cache)
+
+        chunked_cache = make_prompt_cache(model)
+        c1 = model(ids[:, :20], cache=chunked_cache)
+        c2 = model(ids[:, 20:], cache=chunked_cache)
+        chunked = mx.concatenate([c1, c2], axis=1)
+
+        self.assertTrue(
+            mx.allclose(chunked, oneshot, rtol=1e-4, atol=1e-4),
+            f"chunked/oneshot mismatch: max {mx.max(mx.abs(chunked - oneshot))}",
+        )
+
+        # The next decode step must agree however the prompt entered the cache.
+        last = mx.argmax(oneshot[0, -1:, :], keepdims=True)
+        from_chunked = model(last, cache=chunked_cache)
+        from_oneshot = model(last, cache=oneshot_cache)
+        self.assertTrue(mx.allclose(from_chunked, from_oneshot, rtol=1e-4, atol=1e-4))
 
 
 class TestVLSanitize(unittest.TestCase):

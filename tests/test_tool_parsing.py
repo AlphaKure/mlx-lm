@@ -156,6 +156,34 @@ class TestToolParsing(unittest.TestCase):
                 }
                 self.assertEqual(tool_call, expected)
 
+    def test_glm47_string_typed_args(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "postal_code": {"type": "string"},
+                            "days": {"type": "integer"},
+                        },
+                    },
+                },
+            }
+        ]
+        # Laguna puts each pair on its own line. A string-typed argument stays a
+        # string even when it parses as a number.
+        test_case = (
+            "get_weather\n"
+            "<arg_key>postal_code</arg_key>\n<arg_value>123</arg_value>\n"
+            "<arg_key>days</arg_key>\n<arg_value>3</arg_value>"
+        )
+        self.assertEqual(
+            glm47.parse_tool_call(test_case, tools),
+            {"name": "get_weather", "arguments": {"postal_code": "123", "days": 3}},
+        )
+
     def test_pythonic_single_quoted_args_with_commas(self):
         # LFM2.5 emits single-quoted strings; embedded commas must not truncate
         test_case = "[write(filePath='/tmp/hello.py', " "content='# Hello, world!')]"
@@ -211,6 +239,41 @@ class TestToolParsing(unittest.TestCase):
         tool_call = qwen3_coder.parse_tool_call(test_case, tools)
         self.assertEqual(tool_call["arguments"]["filters"], {"category": "books"})
         self.assertEqual(tool_call["arguments"]["tags"], ["fiction", "new"])
+
+    def test_pythonic_nested_args(self):
+        # Containers are rendered with tojson, so they hold true/false/null.
+        test_case = (
+            "[grocery.orderIngredients("
+            'ingredientList=[{"name": "noodles", "organic": true, "unit": null}], '
+            'deliveryAddress="845 Willow Lane, Springfield, IL 62704")]'
+        )
+        self.assertEqual(
+            pythonic.parse_tool_call(test_case, None),
+            {
+                "name": "grocery.orderIngredients",
+                "arguments": {
+                    "ingredientList": [
+                        {"name": "noodles", "organic": True, "unit": None}
+                    ],
+                    "deliveryAddress": "845 Willow Lane, Springfield, IL 62704",
+                },
+            },
+        )
+
+    def test_pythonic_parallel_calls(self):
+        test_case = '[get_time(location="Paris"), get_temperature(location="Tokyo")]'
+        self.assertEqual(
+            pythonic.parse_tool_call(test_case, None),
+            [
+                {"name": "get_time", "arguments": {"location": "Paris"}},
+                {"name": "get_temperature", "arguments": {"location": "Tokyo"}},
+            ],
+        )
+
+    def test_pythonic_invalid_calls(self):
+        for test_case in ['[manim-video(mode="plan")]', 'get_time(location="Paris")']:
+            with self.assertRaises(ValueError):
+                pythonic.parse_tool_call(test_case, None)
 
     def test_gemma4(self):
         # Nested object
