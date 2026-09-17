@@ -125,7 +125,7 @@ class MobileMoEAttention(nn.Module):
         if self.use_rope:
             self.rope = initialize_rope(
                 dims=self.head_dim,
-                traditional=False,
+                traditional=True,
                 base=config.rope_theta,
                 scaling_config=config.rope_scaling,
                 max_position_embeddings=config.max_position_embeddings,
