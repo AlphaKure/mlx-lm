@@ -75,18 +75,15 @@ class ModelArgs(BaseModelArgs):
             self.rope_theta = float(self.rope_parameters.get("rope_theta"))
 
 
+@mx.compile
 def calc_router_weights(
-    hidden_states: mx.array,
-    router_proj: nn.Linear,
+    logits: mx.array,
     score_func: Literal["softmax", "sigmoid"],
     top_k: int,
     scaling_factor: Optional[float],
+    bias: Optional[mx.array] = None,
     norm_topk_prob: Optional[bool] = False,
 ) -> Tuple[mx.array, mx.array]:
-
-    logits = router_proj(hidden_states)
-    if router_proj.bias is not None:
-        logits = logits - router_proj.bias
 
     if score_func == "sigmoid":
         routing_score = nn.sigmoid(logits).astype(mx.float32)
@@ -94,8 +91,8 @@ def calc_router_weights(
         routing_score = nn.softmax(logits).astype(mx.float32)
 
     selection_scores = routing_score
-    if router_proj.bias is not None:
-        selection_scores = selection_scores + router_proj.bias
+    if bias is not None:
+        selection_scores = selection_scores + bias
 
     selection_indices = mx.argpartition(-selection_scores, kth=top_k - 1, axis=-1)[
         ..., :top_k
@@ -386,11 +383,18 @@ class K2HorizonMoVAAttention(nn.Module):
 
         flat_hidden_stats = hidden_states.reshape(-1, hidden_states.shape[-1])
 
+        logits = self.v_router(flat_hidden_stats)
+
+        bias = None
+        if self.v_router.bias is not None:
+            bias = self.v_router.bias
+            logits = logits - bias
+
         routers, inds = calc_router_weights(
-            hidden_states=flat_hidden_stats,
-            router_proj=self.v_router,
+            logits=logits,
             score_func=self.router_score_func,
             top_k=self.num_experts_per_tok,
+            bias=bias,
             scaling_factor=self.router_scaling_factor,
         )
 
@@ -517,9 +521,16 @@ class K2HorizonMoe(nn.Module):
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
 
+        logits = self.gate(hidden_states)
+
+        bias = None
+        if self.gate.bias is not None:
+            bias = self.gate.bias
+            logits = logits - bias
+
         routers, inds = calc_router_weights(
-            hidden_states=hidden_states,
-            router_proj=self.gate,
+            logits=logits,
+            bias=bias,
             score_func=self.router_score_func,
             top_k=self.top_k,
             scaling_factor=self.router_scaling_factor,
