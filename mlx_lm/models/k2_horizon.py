@@ -709,6 +709,9 @@ class Model(nn.Module):
 
             prefix = f"model.layers.{layer_idx}.self_attn.v_experts"
 
+            if f"{prefix}.0.weight" not in weights:
+                continue
+
             mova_expert_weights = [
                 weights.pop(f"{prefix}.{expert_idx}.weight")
                 for expert_idx in range(self.args.mova_num_experts)
