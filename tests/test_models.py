@@ -1747,6 +1747,7 @@ class TestModels(unittest.TestCase):
                 grad = layer_grads["feed_forward"]["down_proj"]["weight"]
                 self.assertTrue(mx.all(mx.isfinite(grad)).item())
                 self.assertGreater(mx.max(mx.abs(grad)).item(), 0)
+
     def test_g9v3(self):
         from mlx_lm.models import g9v3
 
