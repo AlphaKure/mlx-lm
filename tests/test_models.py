@@ -1711,6 +1711,43 @@ class TestModels(unittest.TestCase):
             model, args.model_type, args.vocab_size, args.num_hidden_layers
         )
 
+    def test_falcon_h1_without_cache(self):
+        from mlx_lm.models import falcon_h1
+
+        mx.random.seed(0)
+        args = falcon_h1.ModelArgs(
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=3,
+            vocab_size=64,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=16,
+            mamba_d_ssm=32,
+            mamba_n_heads=2,
+            mamba_d_head=16,
+            mamba_d_state=8,
+        )
+        model = falcon_h1.Model(args)
+        inputs = mx.array([[0, 1, 2], [2, 1, 0]])
+        targets = mx.array([[1, 2, 3], [1, 0, 3]])
+
+        with self.subTest("logits"):
+            logits = model(inputs)
+            cached_logits = model(inputs, cache=model.make_cache())
+            self.assertTrue(mx.allclose(logits, cached_logits, atol=1e-5))
+
+        def loss_fn(model):
+            return nn.losses.cross_entropy(model(inputs), targets).mean()
+
+        loss, grads = nn.value_and_grad(model, loss_fn)(model)
+        self.assertTrue(mx.isfinite(loss).item())
+        for i, layer_grads in enumerate(grads["model"]["layers"]):
+            with self.subTest(layer=i):
+                grad = layer_grads["feed_forward"]["down_proj"]["weight"]
+                self.assertTrue(mx.all(mx.isfinite(grad)).item())
+                self.assertGreater(mx.max(mx.abs(grad)).item(), 0)
+
     def test_g9v3(self):
         from mlx_lm.models import g9v3
 
@@ -3688,6 +3725,40 @@ class TestModels(unittest.TestCase):
                 "layer_group_size": 2,
                 "group_norm_size": 1,
                 "max_position_embeddings": 1000,
+            },
+            {
+                "model_type": "bailing_hybrid",
+                "hidden_size": 256,
+                "intermediate_size": 512,
+                "moe_intermediate_size": 256,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "num_experts": 8,
+                "num_experts_per_tok": 2,
+                "num_shared_experts": 1,
+                "n_group": 2,
+                "topk_group": 1,
+                "first_k_dense_replace": 1,
+                "layer_group_size": 2,
+                "group_norm_size": 4,
+                "vocab_size": 1000,
+                "rms_norm_eps": 1e-5,
+                "rope_theta": 1000,
+                "max_position_embeddings": 1000,
+                "routed_scaling_factor": 2.5,
+                "head_dim": 64,
+                "kv_lora_rank": 64,
+                "q_lora_rank": 96,
+                "qk_rope_head_dim": 16,
+                "qk_nope_head_dim": 32,
+                "v_head_dim": 32,
+                "rope_interleave": True,
+                "partial_rotary_factor": 0.5,
+                "use_qk_norm": True,
+                "score_function": "sigmoid",
+                "norm_topk_prob": True,
+                "moe_router_enable_expert_bias": True,
             },
             {
                 "model_type": "qwen3_next",
