@@ -12,10 +12,6 @@ from .rope_utils import initialize_rope
 
 @dataclass
 class ModelArgs(BaseModelArgs):
-    """
-    "initializer_range": 0.02,
-    "tie_word_embeddings": true,
-    """
 
     model_type: str = "aion_instruct"
     vocab_size: int = 200029
