@@ -7,6 +7,7 @@ import mlx.core as mx
 from mlx import nn
 
 from .base import BaseModelArgs, create_attention_mask, scaled_dot_product_attention
+from .cache import KVCache, RotatingKVCache
 from .rope_utils import initialize_rope
 
 
@@ -236,3 +237,13 @@ class Model(nn.Module):
     @property
     def layers(self):
         return self.model.layers
+
+    def make_cache(self):
+        return [
+            (
+                RotatingKVCache(max_size=self.args.sliding_window)
+                if layer.layer_types == "swa"
+                else KVCache()
+            )
+            for layer in self.layers
+        ]
